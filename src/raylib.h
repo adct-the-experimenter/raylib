@@ -431,6 +431,21 @@ typedef struct Wave {
     void *data;                 // Buffer data pointer
 } Wave;
 
+// enum for type of filter applied
+typedef enum {
+	AUDIO_FILTER_NONE = 0,
+	AUDIO_FILTER_LOW_PASS,
+	AUDIO_FILTER_HIGH_PASS
+} AudioFilterUsage;
+
+//struct for holding filter information
+typedef struct AudioFilterParams{
+	
+	int usage;
+	float cutoff;
+	
+} AudioFilterParams;
+
 typedef struct rAudioBuffer rAudioBuffer;
 
 // AudioStream, custom audio stream
@@ -1495,6 +1510,7 @@ RLAPI Wave WaveCopy(Wave wave);                                       // Copy a 
 RLAPI void WaveCrop(Wave *wave, int initSample, int finalSample);     // Crop a wave to defined samples range
 RLAPI float *LoadWaveSamples(Wave wave);                              // Load samples data from wave as a floats array
 RLAPI void UnloadWaveSamples(float *samples);                         // Unload samples data loaded with LoadWaveSamples()
+RLAPI void SetFilterForSound(Sound sound, AudioFilterParams filter_params);        //Set filter for a sound
 
 // Music management functions
 RLAPI Music LoadMusicStream(const char *fileName);                    // Load music stream from file

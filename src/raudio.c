@@ -34,6 +34,9 @@
 *       jar_mod.h    - MOD audio file loading
 *
 *   CONTRIBUTORS:
+* 		Pablo Camacho (github: @adct-the-experimenter) (2021)
+* 			-Added filter implementation to raylib audio module
+* 
 *       David Reid (github: @mackron) (Nov. 2017):
 *           - Complete port to miniaudio library
 *
@@ -43,7 +46,7 @@
 *           - Mixing channels support
 *           - Raw audio context support
 *
-*
+*		
 *   LICENSE: zlib/libpng
 *
 *   Copyright (c) 2013-2021 Ramon Santamaria (@raysan5)
@@ -306,6 +309,7 @@ typedef enum {
     AUDIO_BUFFER_USAGE_STREAM
 } AudioBufferUsage;
 
+
 // Audio buffer structure
 struct rAudioBuffer {
     ma_data_converter converter;    // Audio data converter
@@ -317,6 +321,8 @@ struct rAudioBuffer {
     bool paused;                    // Audio buffer state: AUDIO_PAUSED
     bool looping;                   // Audio buffer looping, always true for AudioStreams
     int usage;                      // Audio buffer usage mode: STATIC or STREAM
+    
+    AudioFilterParams filter_params;	// Audio filter usage mode: LOW_PASS or HIGH_PASS
 
     bool isSubBufferProcessed[2];   // SubBuffer processed (virtual double buffer)
     unsigned int sizeInFrames;      // Total buffer size in frames
@@ -368,7 +374,7 @@ static AudioData AUDIO = {          // Global AUDIO context
 //----------------------------------------------------------------------------------
 static void OnLog(ma_context *pContext, ma_device *pDevice, ma_uint32 logLevel, const char *message);
 static void OnSendAudioDataToDevice(ma_device *pDevice, void *pFramesOut, const void *pFramesInput, ma_uint32 frameCount);
-static void MixAudioFrames(float *framesOut, const float *framesIn, ma_uint32 frameCount, float localVolume);
+static void MixAudioFrames(float *framesOut, const float *framesIn, ma_uint32 frameCount, float localVolume, AudioFilterParams* filter_params);
 
 #if defined(RAUDIO_STANDALONE)
 static bool IsFileExtension(const char *fileName, const char *ext); // Check file extension
@@ -395,6 +401,7 @@ void PauseAudioBuffer(AudioBuffer *buffer);
 void ResumeAudioBuffer(AudioBuffer *buffer);
 void SetAudioBufferVolume(AudioBuffer *buffer, float volume);
 void SetAudioBufferPitch(AudioBuffer *buffer, float pitch);
+void SetAudioBufferFilter(AudioBuffer *buffer, AudioFilterParams filter_params);
 void TrackAudioBuffer(AudioBuffer *buffer);
 void UntrackAudioBuffer(AudioBuffer *buffer);
 
@@ -654,6 +661,12 @@ void SetAudioBufferPitch(AudioBuffer *buffer, float pitch)
 
         buffer->pitch = pitch;
     }
+}
+
+//set simple low pass filter for audio buffer
+void SetAudioBufferFilter(AudioBuffer *buffer, AudioFilterParams filter_params)
+{
+	buffer->filter_params = filter_params;
 }
 
 // Track audio buffer to linked list next position
@@ -1103,6 +1116,12 @@ void SetSoundVolume(Sound sound, float volume)
 void SetSoundPitch(Sound sound, float pitch)
 {
     SetAudioBufferPitch(sound.stream.buffer, pitch);
+}
+
+// Set filter for a sound
+void SetFilterForSound(Sound sound, AudioFilterParams filter_params)
+{
+	SetAudioBufferFilter(sound.stream.buffer,filter_params);
 }
 
 // Convert wave data to desired format
@@ -2163,7 +2182,7 @@ static void OnSendAudioDataToDevice(ma_device *pDevice, void *pFramesOut, const 
                         float *framesOut = (float *)pFramesOut + (framesRead*AUDIO.System.device.playback.channels);
                         float *framesIn = tempBuffer;
 
-                        MixAudioFrames(framesOut, framesIn, framesJustRead, audioBuffer->volume);
+                        MixAudioFrames(framesOut, framesIn, framesJustRead, audioBuffer->volume, &audioBuffer->filter_params);
 
                         framesToRead -= framesJustRead;
                         framesRead += framesJustRead;
@@ -2203,9 +2222,24 @@ static void OnSendAudioDataToDevice(ma_device *pDevice, void *pFramesOut, const 
     ma_mutex_unlock(&AUDIO.System.lock);
 }
 
+static void ApplyFilterToFrame(AudioFilterParams *filter_params, float *frame)
+{
+	switch(filter_params->usage)
+	{
+		AUDIO_FILTER_NONE: 
+			/* Do nothing */ 
+			break;
+		AUDIO_FILTER_LOW_PASS:
+			
+			break;
+		AUDIO_FILTER_HIGH_PASS:
+			break;
+	}
+}
+
 // This is the main mixing function. Mixing is pretty simple in this project - it's just an accumulation.
 // NOTE: framesOut is both an input and an output. It will be initially filled with zeros outside of this function.
-static void MixAudioFrames(float *framesOut, const float *framesIn, ma_uint32 frameCount, float localVolume)
+static void MixAudioFrames(float *framesOut, const float *framesIn, ma_uint32 frameCount, float localVolume,AudioFilterParams *filter_params)
 {
     for (ma_uint32 iFrame = 0; iFrame < frameCount; ++iFrame)
     {
@@ -2213,8 +2247,10 @@ static void MixAudioFrames(float *framesOut, const float *framesIn, ma_uint32 fr
         {
             float *frameOut = framesOut + (iFrame*AUDIO.System.device.playback.channels);
             const float *frameIn = framesIn + (iFrame*AUDIO.System.device.playback.channels);
-
+			
             frameOut[iChannel] += (frameIn[iChannel]*localVolume);
+            
+            ApplyFilterToFrame(filter_params, &frameOut[iChannel]);
         }
     }
 }
