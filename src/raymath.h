@@ -138,11 +138,11 @@ typedef struct Matrix {
 
 // NOTE: Helper types to be used instead of array return types for *ToFloat functions
 typedef struct float3 {
-	float v[3];
+    float v[3];
 } float3;
 
 typedef struct float16 {
-	float v[16];
+    float v[16];
 } float16;
 
 #include <math.h>       // Required for: sinf(), cosf(), tan(), atan2f(), sqrtf(), fminf(), fmaxf(), fabs()
@@ -1432,7 +1432,7 @@ RMDEF Quaternion QuaternionFromAxisAngle(Vector3 axis, float angle)
 {
     Quaternion result = { 0.0f, 0.0f, 0.0f, 1.0f };
     float axisLength = sqrtf(axis.x*axis.x + axis.y*axis.y + axis.z*axis.z);
-    
+
     if (axisLength != 0.0f)
     {
         angle *= 0.5f;

@@ -741,11 +741,11 @@ Wave LoadWaveFromMemory(const char *fileType, const unsigned char *fileData, int
 
         if (success)
         {
-            wave.sampleCount = (unsigned int)wav.totalPCMFrameCount*wav.channels;
+            wave.frameCount = (unsigned int)wav.totalPCMFrameCount;
             wave.sampleRate = wav.sampleRate;
             wave.sampleSize = 16;
             wave.channels = wav.channels;
-            wave.data = (short *)RL_MALLOC(wave.sampleCount*sizeof(short));
+            wave.data = (short *)RL_MALLOC(wave.frameCount*wave.channels*sizeof(short));
 
             // NOTE: We are forcing conversion to 16bit sample size on reading
             drwav_read_pcm_frames_s16(&wav, wav.totalPCMFrameCount, wave.data);
@@ -767,11 +767,11 @@ Wave LoadWaveFromMemory(const char *fileType, const unsigned char *fileData, int
             wave.sampleRate = info.sample_rate;
             wave.sampleSize = 16;       // By default, ogg data is 16 bit per sample (short)
             wave.channels = info.channels;
-            wave.sampleCount = (unsigned int)stb_vorbis_stream_length_in_samples(oggData)*info.channels;  // Independent by channel
-            wave.data = (short *)RL_MALLOC(wave.sampleCount*sizeof(short));
+            wave.frameCount = (unsigned int)stb_vorbis_stream_length_in_samples(oggData);  // NOTE: It returns frames!
+            wave.data = (short *)RL_MALLOC(wave.frameCount*wave.channels*sizeof(short));
 
-            // NOTE: Get the number of samples to process (be careful! we ask for number of shorts!)
-            stb_vorbis_get_samples_short_interleaved(oggData, info.channels, (short *)wave.data, wave.sampleCount);
+            // NOTE: Get the number of samples to process (be careful! we ask for number of shorts, not bytes!)
+            stb_vorbis_get_samples_short_interleaved(oggData, info.channels, (short *)wave.data, wave.frameCount*wave.channels);
             stb_vorbis_close(oggData);
         }
         else TRACELOG(LOG_WARNING, "WAVE: Failed to load OGG data");
@@ -786,7 +786,7 @@ Wave LoadWaveFromMemory(const char *fileType, const unsigned char *fileData, int
         wave.data = drflac_open_memory_and_read_pcm_frames_s16(fileData, dataSize, &wave.channels, &wave.sampleRate, &totalFrameCount, NULL);
         wave.sampleSize = 16;
 
-        if (wave.data != NULL) wave.sampleCount = (unsigned int)totalFrameCount*wave.channels;
+        if (wave.data != NULL) wave.frameCount = (unsigned int)totalFrameCount;
         else TRACELOG(LOG_WARNING, "WAVE: Failed to load FLAC data");
     }
 #endif
@@ -804,7 +804,7 @@ Wave LoadWaveFromMemory(const char *fileType, const unsigned char *fileData, int
         {
             wave.channels = config.channels;
             wave.sampleRate = config.sampleRate;
-            wave.sampleCount = (int)totalFrameCount*wave.channels;
+            wave.frameCount = (int)totalFrameCount;
         }
         else TRACELOG(LOG_WARNING, "WAVE: Failed to load MP3 data");
 
@@ -848,7 +848,7 @@ Sound LoadSoundFromWave(Wave wave)
         // First option has been selected, format conversion is done on the loading stage.
         // The downside is that it uses more memory if the original sound is u8 or s16.
         ma_format formatIn = ((wave.sampleSize == 8)? ma_format_u8 : ((wave.sampleSize == 16)? ma_format_s16 : ma_format_f32));
-        ma_uint32 frameCountIn = wave.sampleCount/wave.channels;
+        ma_uint32 frameCountIn = wave.frameCount;
 
         ma_uint32 frameCount = (ma_uint32)ma_convert_frames(NULL, 0, AUDIO_DEVICE_FORMAT, AUDIO_DEVICE_CHANNELS, AUDIO.System.device.sampleRate, NULL, frameCountIn, formatIn, wave.channels, wave.sampleRate);
         if (frameCount == 0) TRACELOG(LOG_WARNING, "SOUND: Failed to get frame count for format conversion");
@@ -863,7 +863,7 @@ Sound LoadSoundFromWave(Wave wave)
         frameCount = (ma_uint32)ma_convert_frames(audioBuffer->data, frameCount, AUDIO_DEVICE_FORMAT, AUDIO_DEVICE_CHANNELS, AUDIO.System.device.sampleRate, wave.data, frameCountIn, formatIn, wave.channels, wave.sampleRate);
         if (frameCount == 0) TRACELOG(LOG_WARNING, "SOUND: Failed format conversion");
 
-        sound.sampleCount = frameCount*AUDIO_DEVICE_CHANNELS;
+        sound.frameCount = frameCount;
         sound.stream.sampleRate = AUDIO.System.device.sampleRate;
         sound.stream.sampleSize = 32;
         sound.stream.channels = AUDIO_DEVICE_CHANNELS;
@@ -921,7 +921,7 @@ bool ExportWave(Wave wave, const char *fileName)
         void *fileData = NULL;
         size_t fileDataSize = 0;
         success = drwav_init_memory_write(&wav, &fileData, &fileDataSize, &format, NULL);
-        if (success) success = (int)drwav_write_pcm_frames(&wav, wave.sampleCount/wave.channels, wave.data);
+        if (success) success = (int)drwav_write_pcm_frames(&wav, wave.frameCount, wave.data);
         drwav_result result = drwav_uninit(&wav);
 
         if (result == DRWAV_SUCCESS) success = SaveFileData(fileName, (unsigned char *)fileData, (unsigned int)fileDataSize);
@@ -933,7 +933,7 @@ bool ExportWave(Wave wave, const char *fileName)
     {
         // Export raw sample data (without header)
         // NOTE: It's up to the user to track wave parameters
-        success = SaveFileData(fileName, wave.data, wave.sampleCount*wave.sampleSize/8);
+        success = SaveFileData(fileName, wave.data, wave.frameCount*wave.channels*wave.sampleSize/8);
     }
 
     if (success) TRACELOG(LOG_INFO, "FILEIO: [%s] Wave data exported successfully", fileName);
@@ -951,7 +951,7 @@ bool ExportWaveAsCode(Wave wave, const char *fileName)
     #define TEXT_BYTES_PER_LINE     20
 #endif
 
-    int waveDataSize = wave.sampleCount*wave.channels*wave.sampleSize/8;
+    int waveDataSize = wave.frameCount*wave.channels*wave.sampleSize/8;
 
     // NOTE: Text data buffer size is estimated considering wave data size in bytes
     // and requiring 6 char bytes for every byte: "0x00, "
@@ -979,7 +979,8 @@ bool ExportWaveAsCode(Wave wave, const char *fileName)
 #endif
 
     bytesCount += sprintf(txtData + bytesCount, "// Wave data information\n");
-    bytesCount += sprintf(txtData + bytesCount, "#define %s_SAMPLE_COUNT     %u\n", varFileName, wave.sampleCount);
+    bytesCount += sprintf(txtData + bytesCount, "#define %s_FRAME_COUNT      %u\n", varFileName, wave.frameCount);
+    bytesCount += sprintf(txtData + bytesCount, "#define %s_SAMPLE_COUNT     %u\n", varFileName, wave.frameCount*wave.channels);
     bytesCount += sprintf(txtData + bytesCount, "#define %s_SAMPLE_RATE      %u\n", varFileName, wave.sampleRate);
     bytesCount += sprintf(txtData + bytesCount, "#define %s_SAMPLE_SIZE      %u\n", varFileName, wave.sampleSize);
     bytesCount += sprintf(txtData + bytesCount, "#define %s_CHANNELS         %u\n\n", varFileName, wave.channels);
@@ -1130,7 +1131,7 @@ void WaveFormat(Wave *wave, int sampleRate, int sampleSize, int channels)
     ma_format formatIn = ((wave->sampleSize == 8)? ma_format_u8 : ((wave->sampleSize == 16)? ma_format_s16 : ma_format_f32));
     ma_format formatOut = ((sampleSize == 8)? ma_format_u8 : ((sampleSize == 16)? ma_format_s16 : ma_format_f32));
 
-    ma_uint32 frameCountIn = wave->sampleCount/wave->channels;
+    ma_uint32 frameCountIn = wave->frameCount;
 
     ma_uint32 frameCount = (ma_uint32)ma_convert_frames(NULL, 0, formatOut, channels, sampleRate, NULL, frameCountIn, formatIn, wave->channels, wave->sampleRate);
     if (frameCount == 0)
@@ -1148,7 +1149,7 @@ void WaveFormat(Wave *wave, int sampleRate, int sampleSize, int channels)
         return;
     }
 
-    wave->sampleCount = frameCount*channels;
+    wave->frameCount = frameCount;
     wave->sampleSize = sampleSize;
     wave->sampleRate = sampleRate;
     wave->channels = channels;
@@ -1161,14 +1162,14 @@ Wave WaveCopy(Wave wave)
 {
     Wave newWave = { 0 };
 
-    newWave.data = RL_MALLOC(wave.sampleCount*wave.sampleSize/8);
+    newWave.data = RL_MALLOC(wave.frameCount*wave.channels*wave.sampleSize/8);
 
     if (newWave.data != NULL)
     {
         // NOTE: Size must be provided in bytes
-        memcpy(newWave.data, wave.data, wave.sampleCount*wave.sampleSize/8);
+        memcpy(newWave.data, wave.data, wave.frameCount*wave.channels*wave.sampleSize/8);
 
-        newWave.sampleCount = wave.sampleCount;
+        newWave.frameCount = wave.frameCount;
         newWave.sampleRate = wave.sampleRate;
         newWave.sampleSize = wave.sampleSize;
         newWave.channels = wave.channels;
@@ -1182,7 +1183,7 @@ Wave WaveCopy(Wave wave)
 void WaveCrop(Wave *wave, int initSample, int finalSample)
 {
     if ((initSample >= 0) && (initSample < finalSample) &&
-        (finalSample > 0) && ((unsigned int)finalSample < wave->sampleCount))
+        (finalSample > 0) && ((unsigned int)finalSample < (wave->frameCount*wave->channels)))
     {
         int sampleCount = finalSample - initSample;
 
@@ -1201,11 +1202,11 @@ void WaveCrop(Wave *wave, int initSample, int finalSample)
 // NOTE 2: Sample data allocated should be freed with UnloadWaveSamples()
 float *LoadWaveSamples(Wave wave)
 {
-    float *samples = (float *)RL_MALLOC(wave.sampleCount*sizeof(float));
+    float *samples = (float *)RL_MALLOC(wave.frameCount*wave.channels*sizeof(float));
 
     // NOTE: sampleCount is the total number of interlaced samples (including channels)
 
-    for (unsigned int i = 0; i < wave.sampleCount; i++)
+    for (unsigned int i = 0; i < wave.frameCount*wave.channels; i++)
     {
         if (wave.sampleSize == 8) samples[i] = (float)(((unsigned char *)wave.data)[i] - 127)/256.0f;
         else if (wave.sampleSize == 16) samples[i] = (float)(((short *)wave.data)[i])/32767.0f;
@@ -1247,7 +1248,7 @@ Music LoadMusicStream(const char *fileName)
             if (ctxWav->bitsPerSample == 24) sampleSize = 16;   // Forcing conversion to s16 on UpdateMusicStream()
 
             music.stream = LoadAudioStream(ctxWav->sampleRate, sampleSize, ctxWav->channels);
-            music.sampleCount = (unsigned int)ctxWav->totalPCMFrameCount*ctxWav->channels;
+            music.frameCount = (unsigned int)ctxWav->totalPCMFrameCount;
             music.looping = true;   // Looping enabled by default
             musicLoaded = true;
         }
@@ -1268,7 +1269,7 @@ Music LoadMusicStream(const char *fileName)
             music.stream = LoadAudioStream(info.sample_rate, 16, info.channels);
 
             // WARNING: It seems this function returns length in frames, not samples, so we multiply by channels
-            music.sampleCount = (unsigned int)stb_vorbis_stream_length_in_samples((stb_vorbis *)music.ctxData)*info.channels;
+            music.frameCount = (unsigned int)stb_vorbis_stream_length_in_samples((stb_vorbis *)music.ctxData);
             music.looping = true;   // Looping enabled by default
             musicLoaded = true;
         }
@@ -1285,7 +1286,7 @@ Music LoadMusicStream(const char *fileName)
             drflac *ctxFlac = (drflac *)music.ctxData;
 
             music.stream = LoadAudioStream(ctxFlac->sampleRate, ctxFlac->bitsPerSample, ctxFlac->channels);
-            music.sampleCount = (unsigned int)ctxFlac->totalPCMFrameCount*ctxFlac->channels;
+            music.frameCount = (unsigned int)ctxFlac->totalPCMFrameCount;
             music.looping = true;   // Looping enabled by default
             musicLoaded = true;
         }
@@ -1303,7 +1304,7 @@ Music LoadMusicStream(const char *fileName)
         if (result > 0)
         {
             music.stream = LoadAudioStream(ctxMp3->sampleRate, 32, ctxMp3->channels);
-            music.sampleCount = (unsigned int)drmp3_get_pcm_frame_count(ctxMp3)*ctxMp3->channels;
+            music.frameCount = (unsigned int)drmp3_get_pcm_frame_count(ctxMp3);
             music.looping = true;   // Looping enabled by default
             musicLoaded = true;
         }
@@ -1328,9 +1329,9 @@ Music LoadMusicStream(const char *fileName)
 
             // NOTE: Only stereo is supported for XM
             music.stream = LoadAudioStream(AUDIO.System.device.sampleRate, bits, AUDIO_DEVICE_CHANNELS);
-            music.sampleCount = (unsigned int)jar_xm_get_remaining_samples(ctxXm)*2;    // 2 channels
+            music.frameCount = (unsigned int)jar_xm_get_remaining_samples(ctxXm);    // NOTE: Always 2 channels (stereo)
             music.looping = true;   // Looping enabled by default
-            jar_xm_reset(ctxXm);   // make sure we start at the beginning of the song
+            jar_xm_reset(ctxXm);    // make sure we start at the beginning of the song
             musicLoaded = true;
         }
     }
@@ -1349,7 +1350,7 @@ Music LoadMusicStream(const char *fileName)
         {
             // NOTE: Only stereo is supported for MOD
             music.stream = LoadAudioStream(AUDIO.System.device.sampleRate, 16, AUDIO_DEVICE_CHANNELS);
-            music.sampleCount = (unsigned int)jar_mod_max_samples(ctxMod)*2;    // 2 channels
+            music.frameCount = (unsigned int)jar_mod_max_samples(ctxMod);    // NOTE: Always 2 channels (stereo)
             music.looping = true;   // Looping enabled by default
             musicLoaded = true;
         }
@@ -1386,10 +1387,10 @@ Music LoadMusicStream(const char *fileName)
     {
         // Show some music stream info
         TRACELOG(LOG_INFO, "FILEIO: [%s] Music file loaded successfully", fileName);
-        TRACELOG(LOG_INFO, "    > Total samples: %i", music.sampleCount);
         TRACELOG(LOG_INFO, "    > Sample rate:   %i Hz", music.stream.sampleRate);
         TRACELOG(LOG_INFO, "    > Sample size:   %i bits", music.stream.sampleSize);
         TRACELOG(LOG_INFO, "    > Channels:      %i (%s)", music.stream.channels, (music.stream.channels == 1)? "Mono" : (music.stream.channels == 2)? "Stereo" : "Multi");
+        TRACELOG(LOG_INFO, "    > Total frames:  %i", music.frameCount);
     }
 
     return music;
@@ -1421,7 +1422,7 @@ Music LoadMusicStreamFromMemory(const char *fileType, unsigned char *data, int d
             if (ctxWav->bitsPerSample == 24) sampleSize = 16;   // Forcing conversion to s16 on UpdateMusicStream()
 
             music.stream = LoadAudioStream(ctxWav->sampleRate, sampleSize, ctxWav->channels);
-            music.sampleCount = (unsigned int)ctxWav->totalPCMFrameCount*ctxWav->channels;
+            music.frameCount = (unsigned int)ctxWav->totalPCMFrameCount;
             music.looping = true;   // Looping enabled by default
             musicLoaded = true;
         }
@@ -1438,7 +1439,7 @@ Music LoadMusicStreamFromMemory(const char *fileType, unsigned char *data, int d
             drflac *ctxFlac = (drflac *)music.ctxData;
 
             music.stream = LoadAudioStream(ctxFlac->sampleRate, ctxFlac->bitsPerSample, ctxFlac->channels);
-            music.sampleCount = (unsigned int)ctxFlac->totalPCMFrameCount*ctxFlac->channels;
+            music.frameCount = (unsigned int)ctxFlac->totalPCMFrameCount;
             music.looping = true;   // Looping enabled by default
             musicLoaded = true;
         }
@@ -1456,7 +1457,7 @@ Music LoadMusicStreamFromMemory(const char *fileType, unsigned char *data, int d
         if (success)
         {
             music.stream = LoadAudioStream(ctxMp3->sampleRate, 32, ctxMp3->channels);
-            music.sampleCount = (unsigned int)drmp3_get_pcm_frame_count(ctxMp3)*ctxMp3->channels;
+            music.frameCount = (unsigned int)drmp3_get_pcm_frame_count(ctxMp3);
             music.looping = true;   // Looping enabled by default
             musicLoaded = true;
         }
@@ -1478,7 +1479,7 @@ Music LoadMusicStreamFromMemory(const char *fileType, unsigned char *data, int d
             music.stream = LoadAudioStream(info.sample_rate, 16, info.channels);
 
             // WARNING: It seems this function returns length in frames, not samples, so we multiply by channels
-            music.sampleCount = (unsigned int)stb_vorbis_stream_length_in_samples((stb_vorbis *)music.ctxData)*info.channels;
+            music.frameCount = (unsigned int)stb_vorbis_stream_length_in_samples((stb_vorbis *)music.ctxData);
             music.looping = true;   // Looping enabled by default
             musicLoaded = true;
         }
@@ -1502,7 +1503,7 @@ Music LoadMusicStreamFromMemory(const char *fileType, unsigned char *data, int d
 
             // NOTE: Only stereo is supported for XM
             music.stream = LoadAudioStream(AUDIO.System.device.sampleRate, bits, 2);
-            music.sampleCount = (unsigned int)jar_xm_get_remaining_samples(ctxXm)*2;    // 2 channels
+            music.frameCount = (unsigned int)jar_xm_get_remaining_samples(ctxXm);    // NOTE: Always 2 channels (stereo)
             music.looping = true;   // Looping enabled by default
             jar_xm_reset(ctxXm);   // make sure we start at the beginning of the song
 
@@ -1540,7 +1541,7 @@ Music LoadMusicStreamFromMemory(const char *fileType, unsigned char *data, int d
 
             // NOTE: Only stereo is supported for MOD
             music.stream = LoadAudioStream(AUDIO.System.device.sampleRate, 16, 2);
-            music.sampleCount = (unsigned int)jar_mod_max_samples(ctxMod)*2;    // 2 channels
+            music.frameCount = (unsigned int)jar_mod_max_samples(ctxMod);    // NOTE: Always 2 channels (stereo)
             music.looping = true;   // Looping enabled by default
             musicLoaded = true;
 
@@ -1580,10 +1581,10 @@ Music LoadMusicStreamFromMemory(const char *fileType, unsigned char *data, int d
     {
         // Show some music stream info
         TRACELOG(LOG_INFO, "FILEIO: Music data loaded successfully");
-        TRACELOG(LOG_INFO, "    > Total samples: %i", music.sampleCount);
         TRACELOG(LOG_INFO, "    > Sample rate:   %i Hz", music.stream.sampleRate);
         TRACELOG(LOG_INFO, "    > Sample size:   %i bits", music.stream.sampleSize);
         TRACELOG(LOG_INFO, "    > Channels:      %i (%s)", music.stream.channels, (music.stream.channels == 1)? "Mono" : (music.stream.channels == 2)? "Stereo" : "Multi");
+        TRACELOG(LOG_INFO, "    > Total frames:  %i", music.frameCount);
     }
 
     return music;
@@ -1679,29 +1680,22 @@ void UpdateMusicStream(Music music)
 {
     if (music.stream.buffer == NULL) return;
 
-#if defined(SUPPORT_FILEFORMAT_XM)
-    if (music.ctxType == MUSIC_MODULE_XM) jar_xm_set_max_loop_count(music.ctxData, music.looping ? 0 : 1);
-#endif
-
     bool streamEnding = false;
-
     unsigned int subBufferSizeInFrames = music.stream.buffer->sizeInFrames/2;
 
     // NOTE: Using dynamic allocation because it could require more than 16KB
     void *pcm = RL_CALLOC(subBufferSizeInFrames*music.stream.channels*music.stream.sampleSize/8, 1);
 
-    int samplesCount = 0;    // Total size of data streamed in L+R samples for xm floats, individual L or R for ogg shorts
+    int frameCountToStream = 0;    // Total size of data in frames to be streamed
 
-    // TODO: Get the sampleLeft using framesProcessed... but first, get total frames processed correctly...
+    // TODO: Get the framesLeft using framesProcessed... but first, get total frames processed correctly...
     //ma_uint32 frameSizeInBytes = ma_get_bytes_per_sample(music.stream.buffer->dsp.formatConverterIn.config.formatIn)*music.stream.buffer->dsp.formatConverterIn.config.channels;
-    int sampleLeft = music.sampleCount - (music.stream.buffer->framesProcessed*music.stream.channels);
-
-    if (music.ctxType == MUSIC_MODULE_XM && music.looping) sampleLeft = subBufferSizeInFrames*4;
+    int framesLeft = music.frameCount - music.stream.buffer->framesProcessed;
 
     while (IsAudioStreamProcessed(music.stream))
     {
-        if ((sampleLeft/music.stream.channels) >= subBufferSizeInFrames) samplesCount = subBufferSizeInFrames*music.stream.channels;
-        else samplesCount = sampleLeft;
+        if (framesLeft >= subBufferSizeInFrames) frameCountToStream = subBufferSizeInFrames;
+        else frameCountToStream = framesLeft;
 
         switch (music.ctxType)
         {
@@ -1709,8 +1703,8 @@ void UpdateMusicStream(Music music)
             case MUSIC_AUDIO_WAV:
             {
                 // NOTE: Returns the number of samples to process (not required)
-                if (music.stream.sampleSize == 16) drwav_read_pcm_frames_s16((drwav *)music.ctxData, samplesCount/music.stream.channels, (short *)pcm);
-                else if (music.stream.sampleSize == 32) drwav_read_pcm_frames_f32((drwav *)music.ctxData, samplesCount/music.stream.channels, (float *)pcm);
+                if (music.stream.sampleSize == 16) drwav_read_pcm_frames_s16((drwav *)music.ctxData, frameCountToStream, (short *)pcm);
+                else if (music.stream.sampleSize == 32) drwav_read_pcm_frames_f32((drwav *)music.ctxData, frameCountToStream, (float *)pcm);
 
             } break;
         #endif
@@ -1718,7 +1712,7 @@ void UpdateMusicStream(Music music)
             case MUSIC_AUDIO_OGG:
             {
                 // NOTE: Returns the number of samples to process (be careful! we ask for number of shorts!)
-                stb_vorbis_get_samples_short_interleaved((stb_vorbis *)music.ctxData, music.stream.channels, (short *)pcm, samplesCount);
+                stb_vorbis_get_samples_short_interleaved((stb_vorbis *)music.ctxData, music.stream.channels, (short *)pcm, frameCountToStream*music.stream.channels);
 
             } break;
         #endif
@@ -1726,15 +1720,14 @@ void UpdateMusicStream(Music music)
             case MUSIC_AUDIO_FLAC:
             {
                 // NOTE: Returns the number of samples to process (not required)
-                drflac_read_pcm_frames_s16((drflac *)music.ctxData, samplesCount, (short *)pcm);
+                drflac_read_pcm_frames_s16((drflac *)music.ctxData, frameCountToStream*music.stream.channels, (short *)pcm);
 
             } break;
         #endif
         #if defined(SUPPORT_FILEFORMAT_MP3)
             case MUSIC_AUDIO_MP3:
             {
-                // NOTE: samplesCount, actually refers to framesCount and returns the number of frames processed
-                drmp3_read_pcm_frames_f32((drmp3 *)music.ctxData, samplesCount/music.stream.channels, (float *)pcm);
+                drmp3_read_pcm_frames_f32((drmp3 *)music.ctxData, frameCountToStream, (float *)pcm);
 
             } break;
         #endif
@@ -1742,9 +1735,9 @@ void UpdateMusicStream(Music music)
             case MUSIC_MODULE_XM:
             {
                 // NOTE: Internally we consider 2 channels generation, so samplesCount/2
-                if (AUDIO_DEVICE_FORMAT == ma_format_f32) jar_xm_generate_samples((jar_xm_context_t *)music.ctxData, (float *)pcm, samplesCount/2);
-                else if (AUDIO_DEVICE_FORMAT == ma_format_s16) jar_xm_generate_samples_16bit((jar_xm_context_t *)music.ctxData, (short *)pcm, samplesCount/2);
-                else if (AUDIO_DEVICE_FORMAT == ma_format_u8) jar_xm_generate_samples_8bit((jar_xm_context_t *)music.ctxData, (char *)pcm, samplesCount/2);
+                if (AUDIO_DEVICE_FORMAT == ma_format_f32) jar_xm_generate_samples((jar_xm_context_t *)music.ctxData, (float *)pcm, frameCountToStream);
+                else if (AUDIO_DEVICE_FORMAT == ma_format_s16) jar_xm_generate_samples_16bit((jar_xm_context_t *)music.ctxData, (short *)pcm, frameCountToStream);
+                else if (AUDIO_DEVICE_FORMAT == ma_format_u8) jar_xm_generate_samples_8bit((jar_xm_context_t *)music.ctxData, (char *)pcm, frameCountToStream);
 
             } break;
         #endif
@@ -1752,22 +1745,17 @@ void UpdateMusicStream(Music music)
             case MUSIC_MODULE_MOD:
             {
                 // NOTE: 3rd parameter (nbsample) specify the number of stereo 16bits samples you want, so sampleCount/2
-                jar_mod_fillbuffer((jar_mod_context_t *)music.ctxData, (short *)pcm, samplesCount/2, 0);
+                jar_mod_fillbuffer((jar_mod_context_t *)music.ctxData, (short *)pcm, frameCountToStream, 0);
             } break;
         #endif
             default: break;
         }
 
-        UpdateAudioStream(music.stream, pcm, samplesCount);
+        UpdateAudioStream(music.stream, pcm, frameCountToStream);
 
-        if ((music.ctxType == MUSIC_MODULE_XM) || music.ctxType == MUSIC_MODULE_MOD)
-        {
-            if (samplesCount > 1) sampleLeft -= samplesCount/2;
-            else sampleLeft -= samplesCount;
-        }
-        else sampleLeft -= samplesCount;
+        framesLeft -= frameCountToStream;
 
-        if (sampleLeft <= 0)
+        if (framesLeft <= 0)
         {
             streamEnding = true;
             break;
@@ -1814,7 +1802,7 @@ float GetMusicTimeLength(Music music)
 {
     float totalSeconds = 0.0f;
 
-    totalSeconds = (float)music.sampleCount/(music.stream.sampleRate*music.stream.channels);
+    totalSeconds = (float)music.frameCount/music.stream.sampleRate;
 
     return totalSeconds;
 }
@@ -1822,22 +1810,24 @@ float GetMusicTimeLength(Music music)
 // Get current music time played (in seconds)
 float GetMusicTimePlayed(Music music)
 {
-#if defined(SUPPORT_FILEFORMAT_XM)
-    if (music.ctxType == MUSIC_MODULE_XM)
-    {
-        uint64_t samples = 0;
-        jar_xm_get_position(music.ctxData, NULL, NULL, NULL, &samples);
-        samples = samples % (music.sampleCount);
-
-        return (float)(samples)/(music.stream.sampleRate*music.stream.channels);
-    }
-#endif
     float secondsPlayed = 0.0f;
     if (music.stream.buffer != NULL)
     {
-        //ma_uint32 frameSizeInBytes = ma_get_bytes_per_sample(music.stream.buffer->dsp.formatConverterIn.config.formatIn)*music.stream.buffer->dsp.formatConverterIn.config.channels;
-        unsigned int samplesPlayed = music.stream.buffer->framesProcessed*music.stream.channels;
-        secondsPlayed = (float)samplesPlayed/(music.stream.sampleRate*music.stream.channels);
+    #if defined(SUPPORT_FILEFORMAT_XM)
+        if (music.ctxType == MUSIC_MODULE_XM)
+        {
+            uint64_t framesPlayed = 0;
+
+            jar_xm_get_position(music.ctxData, NULL, NULL, NULL, &framesPlayed);
+            secondsPlayed = (float)framesPlayed/music.stream.sampleRate;
+        }
+        else
+    #endif
+        {
+            //ma_uint32 frameSizeInBytes = ma_get_bytes_per_sample(music.stream.buffer->dsp.formatConverterIn.config.formatIn)*music.stream.buffer->dsp.formatConverterIn.config.channels;
+            unsigned int framesPlayed = music.stream.buffer->framesProcessed;
+            secondsPlayed = (float)framesPlayed/music.stream.sampleRate;
+        }
     }
 
     return secondsPlayed;
@@ -1886,7 +1876,7 @@ void UnloadAudioStream(AudioStream stream)
 // Update audio stream buffers with data
 // NOTE 1: Only updates one buffer of the stream source: unqueue -> update -> queue
 // NOTE 2: To unqueue a buffer it needs to be processed: IsAudioStreamProcessed()
-void UpdateAudioStream(AudioStream stream, const void *data, int samplesCount)
+void UpdateAudioStream(AudioStream stream, const void *data, int frameCount)
 {
     if (stream.buffer != NULL)
     {
@@ -1915,11 +1905,11 @@ void UpdateAudioStream(AudioStream stream, const void *data, int samplesCount)
 
             // Does this API expect a whole buffer to be updated in one go?
             // Assuming so, but if not will need to change this logic.
-            if (subBufferSizeInFrames >= (ma_uint32)samplesCount/stream.channels)
+            if (subBufferSizeInFrames >= (ma_uint32)frameCount)
             {
                 ma_uint32 framesToWrite = subBufferSizeInFrames;
 
-                if (framesToWrite > ((ma_uint32)samplesCount/stream.channels)) framesToWrite = (ma_uint32)samplesCount/stream.channels;
+                if (framesToWrite > (ma_uint32)frameCount) framesToWrite = (ma_uint32)frameCount;
 
                 ma_uint32 bytesToWrite = framesToWrite*stream.channels*(stream.sampleSize/8);
                 memcpy(subBuffer, data, bytesToWrite);
